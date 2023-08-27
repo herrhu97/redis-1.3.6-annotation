@@ -266,6 +266,7 @@ static int cliReadMultiBulkReply(int fd) {
 static int cliReadReply(int fd) {
     char type;
 
+    // 客户端读取数据，一条经典数据 $1\r\nb\r\n
     if (anetRead(fd,&type,1) <= 0) exit(1);
     switch(type) {
     case '-':
@@ -355,7 +356,7 @@ static int cliSendCommand(int argc, char **argv) {
                     cmd = sdscatlen(cmd,argv[j],sdslen(argv[j]));
                 }
             }
-            cmd = sdscat(cmd,"\r\n");
+            cmd = sdscat(cmd,"\r\n"); // 发送数据一条经典数据 get a\r\n
             if (rc->flags & REDIS_CMD_BULK) {
                 cmd = sdscatlen(cmd,argv[argc-1],sdslen(argv[argc-1]));
                 cmd = sdscatlen(cmd,"\r\n",2);

@@ -1887,6 +1887,7 @@ static void glueReplyBuffersIfNeeded(redisClient *c) {
     listAddNodeHead(c->reply,o);
 }
 
+// 发送的回调函数，将c-reply发送给客户端
 static void sendReplyToClient(aeEventLoop *el, int fd, void *privdata, int mask) {
     redisClient *c = privdata;
     int nwritten = 0, totwritten = 0, objlen;
@@ -1919,14 +1920,14 @@ static void sendReplyToClient(aeEventLoop *el, int fd, void *privdata, int mask)
             /* Don't reply to a master */
             nwritten = objlen - c->sentlen;
         } else {
-            nwritten = write(fd, ((char*)o->ptr)+c->sentlen, objlen - c->sentlen);
+            nwritten = write(fd, ((char*)o->ptr)+c->sentlen, objlen - c->sentlen); // 实际发送
             if (nwritten <= 0) break;
         }
         c->sentlen += nwritten;
         totwritten += nwritten;
         /* If we fully sent the object on head go to the next one */
         if (c->sentlen == objlen) {
-            listDelNode(c->reply,listFirst(c->reply));
+            listDelNode(c->reply,listFirst(c->reply)); // 一个链表节点发送完即清空
             c->sentlen = 0;
         }
         /* Note that we avoid to send more thank REDIS_MAX_WRITE_PER_EVENT
@@ -1949,7 +1950,7 @@ static void sendReplyToClient(aeEventLoop *el, int fd, void *privdata, int mask)
     if (totwritten > 0) c->lastinteraction = time(NULL);
     if (listLength(c->reply) == 0) {
         c->sentlen = 0;
-        aeDeleteFileEvent(server.el,c->fd,AE_WRITABLE);
+        aeDeleteFileEvent(server.el,c->fd,AE_WRITABLE); // c->reply全部发送完，清空链表
     }
 }
 
@@ -2153,14 +2154,14 @@ static int processCommand(redisClient *c) {
 
     /* Now lookup the command and check ASAP about trivial error conditions
      * such wrong arity, bad command name and so forth. */
-    cmd = lookupCommand(c->argv[0]->ptr);
-    if (!cmd) {
+    cmd = lookupCommand(c->argv[0]->ptr); // 开始执行命令
+    if (!cmd) { // 未找到
         addReplySds(c,
             sdscatprintf(sdsempty(), "-ERR unknown command '%s'\r\n",
                 (char*)c->argv[0]->ptr));
         resetClient(c);
         return 1;
-    } else if ((cmd->arity > 0 && cmd->arity != c->argc) ||
+    } else if ((cmd->arity > 0 && cmd->arity != c->argc) || // 参数判定
                (c->argc < -cmd->arity)) {
         addReplySds(c,
             sdscatprintf(sdsempty(),
@@ -2217,7 +2218,7 @@ static int processCommand(redisClient *c) {
         return 1;
     }
 
-    /* Exec the command */
+    /* Exec the command */ // 一系列检测后，执行命令开始
     if (c->flags & REDIS_MULTI && cmd->proc != execCommand && cmd->proc != discardCommand) {
         queueMultiCommand(c,cmd);
         addReply(c,shared.queued);
@@ -2325,7 +2326,7 @@ again:
             c->querybuf = sdsempty();
             querylen = 1+(p-(query));
             if (sdslen(query) > querylen) {
-                /* leave data after the first line of the query in the buffer */
+                /* leave data after the first line of the query in the buffer */ // 后续命令还是放在querybuf，先处理第一个命令
                 c->querybuf = sdscatlen(c->querybuf,query+querylen,sdslen(query)-querylen);
             }
             *p = '\0'; /* remove "\n" */
@@ -2333,11 +2334,11 @@ again:
             sdsupdatelen(query);
 
             /* Now we can split the query in arguments */
-            argv = sdssplitlen(query,sdslen(query)," ",1,&argc);
+            argv = sdssplitlen(query,sdslen(query)," ",1,&argc); // 取tokens
             sdsfree(query);
 
             if (c->argv) zfree(c->argv);
-            c->argv = zmalloc(sizeof(robj*)*argc);
+            c->argv = zmalloc(sizeof(robj*)*argc); // 将argc、argv放到redisClient的argc、argv中
 
             for (j = 0; j < argc; j++) {
                 if (sdslen(argv[j])) {
@@ -2352,7 +2353,7 @@ again:
                 /* Execute the command. If the client is still valid
                  * after processCommand() return and there is something
                  * on the query buffer try to process the next command. */
-                if (processCommand(c) && sdslen(c->querybuf)) goto again;
+                if (processCommand(c) && sdslen(c->querybuf)) goto again; // 执行当前的命令，如果querybuf还有命令继续执行
             } else {
                 /* Nothing to process, argc == 0. Just process the query
                  * buffer if it's not empty or return to the caller */
@@ -2408,13 +2409,13 @@ static void readQueryFromClient(aeEventLoop *el, int fd, void *privdata, int mas
         return;
     }
     if (nread) {
-        c->querybuf = sdscatlen(c->querybuf, buf, nread);
+        c->querybuf = sdscatlen(c->querybuf, buf, nread); // 读取输入到client的querybuf
         c->lastinteraction = time(NULL);
     } else {
         return;
     }
     if (!(c->flags & REDIS_BLOCKED))
-        processInputBuffer(c);
+        processInputBuffer(c); // 处理输入
 }
 
 static int selectDb(redisClient *c, int id) {
@@ -2545,10 +2546,11 @@ static void addReplyBulkLen(redisClient *c, robj *obj) {
     addReplySds(c,sdscatprintf(sdsempty(),"$%lu\r\n",(unsigned long)len));
 }
 
+// 发送bulk给客户端，实际跳动三次addReply（内容都保存在c-reply)，提交一次客户端fd的写事件（通过回调发送c-reply)
 static void addReplyBulk(redisClient *c, robj *obj) {
-    addReplyBulkLen(c,obj);
-    addReply(c,obj);
-    addReply(c,shared.crlf);
+    addReplyBulkLen(c,obj); // addReply $5\r\n 在此向epoll实例注册写事件
+    addReply(c,obj); //  addReply value
+    addReply(c,shared.crlf); // addReply \r\n
 }
 
 static void acceptHandler(aeEventLoop *el, int fd, void *privdata, int mask) {
@@ -2564,7 +2566,7 @@ static void acceptHandler(aeEventLoop *el, int fd, void *privdata, int mask) {
         redisLog(REDIS_VERBOSE,"Accepting client connection: %s", server.neterr);
         return;
     }
-    redisLog(REDIS_VERBOSE,"Accepted %s:%d", cip, cport);
+    redisLog(REDIS_VERBOSE,"Accepted %s:%d", cip, cport); // 打印来源ip、端口
     if ((c = createClient(cfd)) == NULL) { // 创建redisClient结构体,代表客户端连接
         redisLog(REDIS_WARNING,"Error allocating resoures for the client");
         close(cfd); /* May be already closed, just ingore errors */
@@ -2791,7 +2793,7 @@ static robj *lookupKeyWrite(redisDb *db, robj *key) {
 
 static robj *lookupKeyReadOrReply(redisClient *c, robj *key, robj *reply) {
     robj *o = lookupKeyRead(c->db, key);
-    if (!o) addReply(c,reply);
+    if (!o) addReply(c,reply); // 空返回空
     return o;
 }
 
