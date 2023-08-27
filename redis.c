@@ -298,14 +298,15 @@ typedef struct multiState {
     int count;              /* Total number of MULTI commands */
 } multiState;
 
+// 表示redis客户端的状态
 /* With multiplexing we need to take per-clinet state.
  * Clients are taken in a liked list. */
 typedef struct redisClient {
     int fd;
     redisDb *db;
     int dictid;
-    sds querybuf;
-    robj **argv, **mbargv;
+    sds querybuf; // 客户端发送到服务器的命令请求缓冲器
+    robj **argv, **mbargv; // 命令参数数组
     int argc, mbargc;
     int bulklen;            /* bulk read len. -1 if not in bulk read mode */
     int multibulk;          /* multi bulk command format active */
@@ -2301,6 +2302,7 @@ static void replicationFeedSlaves(list *slaves, struct redisCommand *cmd, int di
     if (outv != static_outv) zfree(outv);
 }
 
+// 处理客户端的发送缓冲
 static void processInputBuffer(redisClient *c) {
 again:
     /* Before to process the input buffer, make sure the client is not
@@ -2312,7 +2314,7 @@ again:
     if (c->flags & REDIS_BLOCKED || c->flags & REDIS_IO_WAIT) return;
     if (c->bulklen == -1) {
         /* Read the first line of the query */
-        char *p = strchr(c->querybuf,'\n');
+        char *p = strchr(c->querybuf,'\n'); // 查找第一个出现换行符n的位置
         size_t querylen;
 
         if (p) {
@@ -2430,7 +2432,7 @@ static void *dupClientReplyValue(void *o) {
 static redisClient *createClient(int fd) {
     redisClient *c = zmalloc(sizeof(*c));
 
-    anetNonBlock(NULL,fd);
+    anetNonBlock(NULL,fd); // redis的fd都是非阻塞
     anetTcpNoDelay(NULL,fd);
     if (!c) return NULL;
     selectDb(c,0);
@@ -2563,7 +2565,7 @@ static void acceptHandler(aeEventLoop *el, int fd, void *privdata, int mask) {
         return;
     }
     redisLog(REDIS_VERBOSE,"Accepted %s:%d", cip, cport);
-    if ((c = createClient(cfd)) == NULL) {
+    if ((c = createClient(cfd)) == NULL) { // 创建redisClient结构体,代表客户端连接
         redisLog(REDIS_WARNING,"Error allocating resoures for the client");
         close(cfd); /* May be already closed, just ingore errors */
         return;
