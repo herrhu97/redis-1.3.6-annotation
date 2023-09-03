@@ -1927,7 +1927,7 @@ static void sendReplyToClient(aeEventLoop *el, int fd, void *privdata, int mask)
         totwritten += nwritten;
         /* If we fully sent the object on head go to the next one */
         if (c->sentlen == objlen) {
-            listDelNode(c->reply,listFirst(c->reply)); // 一个链表节点发送完即清空
+            listDelNode(c->reply,listFirst(c->reply)); // 一个链表节点发送完即清空 pop
             c->sentlen = 0;
         }
         /* Note that we avoid to send more thank REDIS_MAX_WRITE_PER_EVENT

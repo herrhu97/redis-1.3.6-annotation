@@ -64,7 +64,7 @@ void listRelease(list *list)
     len = list->len;
     while(len--) {
         next = current->next;
-        if (list->free) list->free(current->value);
+        if (list->free) list->free(current->value); // 先调用析构函数，后释放内存
         zfree(current);
         current = next;
     }
@@ -152,7 +152,7 @@ listIter *listGetIterator(list *list, int direction)
     
     if ((iter = zmalloc(sizeof(*iter))) == NULL) return NULL;
     if (direction == AL_START_HEAD)
-        iter->next = list->head;
+        iter->next = list->head; // 第一次赋值
     else
         iter->next = list->tail;
     iter->direction = direction;
@@ -165,12 +165,12 @@ void listReleaseIterator(listIter *iter) {
 }
 
 /* Create an iterator in the list private iterator structure */
-void listRewind(list *list, listIter *li) {
+void listRewind(list *list, listIter *li) { // 迭代器设为从列表头重新开始
     li->next = list->head;
     li->direction = AL_START_HEAD;
 }
 
-void listRewindTail(list *list, listIter *li) {
+void listRewindTail(list *list, listIter *li) { // 迭代器设为从列表尾重新开始
     li->next = list->tail;
     li->direction = AL_START_TAIL;
 }
@@ -189,7 +189,7 @@ void listRewindTail(list *list, listIter *li) {
  * }
  *
  * */
-listNode *listNext(listIter *iter)
+listNode *listNext(listIter *iter) // 只是函数，非结构体方法
 {
     listNode *current = iter->next;
 

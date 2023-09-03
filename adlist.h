@@ -47,12 +47,13 @@ typedef struct listIter {
 typedef struct list {
     listNode *head;
     listNode *tail;
-    void *(*dup)(void *ptr);
+    void *(*dup)(void *ptr); // 参数名叫dup,入参是一个void*,返回一个void*
     void (*free)(void *ptr);
     int (*match)(void *ptr, void *key);
     unsigned int len;
 } list;
 
+// 使用listLength(my_list)来获取链表的长度，而不是my_list->len。这种写法可以提高代码的可读性和易用性。
 /* Functions implemented as macros */
 #define listLength(l) ((l)->len)
 #define listFirst(l) ((l)->head)

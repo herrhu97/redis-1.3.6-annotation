@@ -3,6 +3,7 @@
  * implementing an O(n) lookup data structure designed to be very memory
  * efficient.
  *
+ * 小数目的entry，用这个存比较省空间；大数目直接用hash table
  * The Redis Hash type uses this data structure for hashes composed of a small
  * number of elements, to switch to an hash table once a given number of
  * elements is reached.
@@ -87,7 +88,7 @@
 #include <assert.h>
 #include "zmalloc.h"
 
-#define ZIPMAP_BIGLEN 253
+#define ZIPMAP_BIGLEN 253 // len变长编码临界值
 #define ZIPMAP_EMPTY 254
 #define ZIPMAP_END 255
 
@@ -126,7 +127,7 @@ static unsigned int zipmapEncodeLength(unsigned char *p, unsigned int len) {
     if (p == NULL) {
         return ZIPMAP_LEN_BYTES(len);
     } else {
-        if (len < ZIPMAP_BIGLEN) {
+        if (len < ZIPMAP_BIGLEN) { // 对len也是一种变长编码
             p[0] = len;
             return 1;
         } else {
@@ -137,10 +138,11 @@ static unsigned int zipmapEncodeLength(unsigned char *p, unsigned int len) {
     }
 }
 
+// O(n)寻址key所在，n为entry的数量
 /* Search for a matching key, returning a pointer to the entry inside the
  * zipmap. Returns NULL if the key is not found.
  *
- * If NULL is returned, and totlen is not NULL, it is set to the entire
+ * If NULL is returned, and totlen is not NULL, it is set to the entire 告诉调用方，需要扩容zipmap
  * size of the zimap, so that the calling function will be able to
  * reallocate the original zipmap to make room for more entries.
  *
@@ -150,49 +152,51 @@ static unsigned int zipmapEncodeLength(unsigned char *p, unsigned int len) {
  * and to get the reply from the function). If there is not a suitable
  * free space block to hold the requested bytes, *freelen is set to 0. */
 static unsigned char *zipmapLookupRaw(unsigned char *zm, unsigned char *key, unsigned int klen, unsigned int *totlen, unsigned int *freeoff, unsigned int *freelen) {
-    unsigned char *p = zm+1;
+    unsigned char *p = zm+1; // 跳过zipmap status
     unsigned int l;
     unsigned int reqfreelen = 0; /* initialized just to prevent warning */
 
     if (freelen) {
-        reqfreelen = *freelen;
+        reqfreelen = *freelen; // 所需字节数
         *freelen = 0;
         assert(reqfreelen != 0);
     }
     while(*p != ZIPMAP_END) {
-        if (*p == ZIPMAP_EMPTY) {
+        if (*p == ZIPMAP_EMPTY) { // <empty><len>....的所有空间占用为l
             l = zipmapDecodeLength(p+1);
             /* if the user want a free space report, and this space is
              * enough, and we did't already found a suitable space... */
-            if (freelen && l >= reqfreelen && *freelen == 0) {
+            if (freelen && l >= reqfreelen && *freelen == 0) { // 空格空间足够
                 *freelen = l;
-                *freeoff = p-zm;
+                *freeoff = p-zm; // 相比zipmap偏移值
             }
             p += l;
-            zm[0] |= ZIPMAP_STATUS_FRAGMENTED;
+            zm[0] |= ZIPMAP_STATUS_FRAGMENTED; // 说明zipmap有空格
         } else {
             unsigned char free;
 
             /* Match or skip the key */
             l = zipmapDecodeLength(p);
+            // p+1不对，应该用p+ZIPMAP_LEN_BYTES(l)
             if (l == klen && !memcmp(p+1,key,l)) return p;
-            p += zipmapEncodeLength(NULL,l) + l;
+            p += zipmapEncodeLength(NULL,l) + l; // 跳过key
             /* Skip the value as well */
             l = zipmapDecodeLength(p);
-            p += zipmapEncodeLength(NULL,l);
+            p += zipmapEncodeLength(NULL,l); // 跳过value <len>
             free = p[0];
-            p += l+1+free; /* +1 to skip the free byte */
+            p += l+1+free; /* +1 to skip the free byte */ // 跳过value <free><value>...
         }
     }
-    if (totlen != NULL) *totlen = (unsigned int)(p-zm)+1;
+    if (totlen != NULL) *totlen = (unsigned int)(p-zm)+1; // zipmap总字节数
     return NULL;
 }
 
+// 通过key和value的length计算存储所需的空间
 static unsigned long zipmapRequiredLength(unsigned int klen, unsigned int vlen) {
     unsigned int l;
 
     l = klen+vlen+3;
-    if (klen >= ZIPMAP_BIGLEN) l += 4;
+    if (klen >= ZIPMAP_BIGLEN) l += 4; // 多出4个字节保存key的长度，下同
     if (vlen >= ZIPMAP_BIGLEN) l += 4;
     return l;
 }
@@ -201,24 +205,26 @@ static unsigned long zipmapRequiredLength(unsigned int klen, unsigned int vlen) 
 static unsigned int zipmapRawKeyLength(unsigned char *p) {
     unsigned int l = zipmapDecodeLength(p);
     
-    return zipmapEncodeLength(NULL,l) + l;
+    return zipmapEncodeLength(NULL,l) + l; // len的长度 + payload的长度
 }
 
 /* Return the total amount used by a value
  * (encoded length + single byte free count + payload) */
 static unsigned int zipmapRawValueLength(unsigned char *p) {
-    unsigned int l = zipmapDecodeLength(p);
+    // <len><free>value foo -> bar => foo -> !
+    unsigned int l = zipmapDecodeLength(p); // 3
     unsigned int used;
     
-    used = zipmapEncodeLength(NULL,l);
-    used += p[used] + 1 + l;
+    used = zipmapEncodeLength(NULL,l); // 实际value所需字节数
+    // p[used]  = *(p + used) 即取free的值
+    used += p[used] + 1 + l; // len所需字节数 += value的空闲字节数 + free所需字节数 + value的实际字节数
     return used;
 }
 
 /* If 'p' points to a key, this function returns the total amount of
  * bytes used to store this entry (entry = key + associated value + trailing
  * free space if any). */
-static unsigned int zipmapRawEntryLength(unsigned char *p) {
+static unsigned int zipmapRawEntryLength(unsigned char *p) { // 传入entry(key\value对)起始位置指针，算出总长度
     unsigned int l = zipmapRawKeyLength(p);
 
     return l + zipmapRawValueLength(p+l);
@@ -235,18 +241,18 @@ unsigned char *zipmapSet(unsigned char *zm, unsigned char *key, unsigned int kle
    
     freelen = reqlen;
     if (update) *update = 0;
-    p = zipmapLookupRaw(zm,key,klen,&oldlen,&freeoff,&freelen);
+    p = zipmapLookupRaw(zm,key,klen,&oldlen,&freeoff,&freelen); // freelen为找到的整个空间大小
     if (p == NULL && freelen == 0) {
         /* Key not found, and not space for the new key. Enlarge */
-        zm = zrealloc(zm,oldlen+reqlen);
+        zm = zrealloc(zm,oldlen+reqlen); // 一、key找不到，没有空间保存entry
         p = zm+oldlen-1;
         zm[oldlen+reqlen-1] = ZIPMAP_END;
         freelen = reqlen;
     } else if (p == NULL) {
         /* Key not found, but there is enough free space. */
-        p = zm+freeoff;
+        p = zm+freeoff; // 二、key找不到，有足够空间保存entry
         /* note: freelen is already set in this case */
-    } else {
+    } else { // 三、key找到
         unsigned char *b = p;
 
         /* Key found. Is there enough space for the new value? */
@@ -255,7 +261,7 @@ unsigned char *zipmapSet(unsigned char *zm, unsigned char *key, unsigned int kle
         freelen = zipmapRawKeyLength(b);
         b += freelen;
         freelen += zipmapRawValueLength(b);
-        if (freelen < reqlen) {
+        if (freelen < reqlen) { // 3.1 旧entry空间不够，标记当前entry为empty，recursion调用set函数
             /* Mark this entry as free and recurse */
             p[0] = ZIPMAP_EMPTY;
             zipmapEncodeLength(p+1,freelen);
@@ -270,7 +276,7 @@ unsigned char *zipmapSet(unsigned char *zm, unsigned char *key, unsigned int kle
     /* If there is too much free space mark it as a free block instead
      * of adding it as trailing empty space for the value, as we want
      * zipmaps to be very space efficient. */
-    if (empty > ZIPMAP_VALUE_MAX_FREE) {
+    if (empty > ZIPMAP_VALUE_MAX_FREE) { // 多余空间标记为Empty
         unsigned char *e;
 
         e = p+reqlen;
@@ -284,12 +290,12 @@ unsigned char *zipmapSet(unsigned char *zm, unsigned char *key, unsigned int kle
 
     /* Just write the key + value and we are done. */
     /* Key: */
-    p += zipmapEncodeLength(p,klen);
-    memcpy(p,key,klen);
+    p += zipmapEncodeLength(p,klen); // memcpy 设置key\value
+    memcpy(p,key,klen); // 如果只是update，且空间足够，set key这一步是没有必要的
     p += klen;
     /* Value: */
     p += zipmapEncodeLength(p,vlen);
-    *p++ = vempty;
+    *p++ = vempty; // 设置free，肯定是小于ZIPMAP_VALUE_MAX_FREE，当前版本为5
     memcpy(p,val,vlen);
     return zm;
 }
@@ -306,7 +312,7 @@ unsigned char *zipmapDel(unsigned char *zm, unsigned char *key, unsigned int kle
         zm[0] |= ZIPMAP_STATUS_FRAGMENTED;
         if (deleted) *deleted = 1;
     } else {
-        if (deleted) *deleted = 0;
+        if (deleted) *deleted = 0; // key不存在，其实也即没有删除
     }
     return zm;
 }
@@ -328,17 +334,17 @@ unsigned char *zipmapRewind(unsigned char *zm) {
  * }
  */
 unsigned char *zipmapNext(unsigned char *zm, unsigned char **key, unsigned int *klen, unsigned char **value, unsigned int *vlen) {
-    while(zm[0] == ZIPMAP_EMPTY)
+    while(zm[0] == ZIPMAP_EMPTY) // 去掉empty
         zm += zipmapDecodeLength(zm+1);
     if (zm[0] == ZIPMAP_END) return NULL;
     if (key) {
         *key = zm;
-        *klen = zipmapDecodeLength(zm);
-        *key += ZIPMAP_LEN_BYTES(*klen);
+        *klen = zipmapDecodeLength(zm); // 存储key的len长度
+        *key += ZIPMAP_LEN_BYTES(*klen); // 存储key
     }
     zm += zipmapRawKeyLength(zm);
     if (value) {
-        *value = zm+1;
+        *value = zm+1; // 跳过free，与跳过len放在一起会不会更好理解？
         *vlen = zipmapDecodeLength(zm);
         *value += ZIPMAP_LEN_BYTES(*vlen);
     }
